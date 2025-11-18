@@ -31,20 +31,19 @@ except ModuleNotFoundError:
 
 from .RescuePicoKey import RescuePicoKey
 from .PhyData import PhyData
-import enum
+from .core import NamedIntEnum
 
-class Platform(enum.IntEnum):
+class Platform(NamedIntEnum):
     RP2040 = 0
     RP2350 = 1
     ESP32  = 2
     EMULATION = 3
 
-class Product(enum.IntEnum):
+class Product(NamedIntEnum):
     UNKNOWN = 0
     HSM     = 1
     FIDO    = 2
     OPENPGP = 3
-
 
 class PicoKey:
     def __init__(self, slot=-1):
@@ -169,3 +168,30 @@ class PicoKey:
             return PhyData.parse(resp)
         else:
             self.send(0x1C, cla=0x80, p1=0x01, data=data)
+
+    def flash_info(self):
+        resp, sw = self.send(0x1E, cla=0x80, p1=0x02)
+        free = int.from_bytes(resp[0:4], 'big')
+        used = int.from_bytes(resp[4:8], 'big')
+        total = int.from_bytes(resp[8:12], 'big')
+        nfiles = int.from_bytes(resp[12:16], 'big')
+        size = int.from_bytes(resp[16:20], 'big')
+        return {
+            'free': free,
+            'used': used,
+            'total': total,
+            'nfiles': nfiles,
+            'size': size
+        }
+
+    def secure_info(self):
+        resp, sw = self.send(0x1E, cla=0x80, p1=0x03)
+        return {
+            'enabled': resp[0] != 0,
+            'locked': resp[1] != 0,
+            'boot_key': resp[2]
+        }
+
+    def secure_boot(self, bootkey_index=0, lock=False):
+        data = bytes([bootkey_index & 0xFF, 1 if lock else 0])
+        self.send(0x1C, cla=0x80, p1=0x02, data=data)
