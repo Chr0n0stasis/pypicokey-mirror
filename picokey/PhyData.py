@@ -18,10 +18,9 @@
  */
 """
 
-from enum import IntEnum
+from .core import NamedIntEnum
 
-
-class PhyTag(IntEnum):
+class PhyTag(NamedIntEnum):
     VIDPID = 0x0
     LED_GPIO = 0x4
     LED_BTNESS = 0x5
@@ -32,15 +31,13 @@ class PhyTag(IntEnum):
     ENABLED_USB_ITF = 0xB
     LED_DRIVER = 0xC
 
-
-class PhyOpt(IntEnum):
+class PhyOpt(NamedIntEnum):
     WCID = 0x1
     DIMM = 0x2
     DISABLE_POWER_RESET = 0x4
     LED_STEADY = 0x8
 
-
-class PhyCurve(IntEnum):
+class PhyCurve(NamedIntEnum):
     SECP256R1 = 0x1
     SECP384R1 = 0x2
     SECP521R1 = 0x4
@@ -53,22 +50,19 @@ class PhyCurve(IntEnum):
     CURVE25519 = 0x200
     CURVE448 = 0x400
 
-
-class PhyUsbItf(IntEnum):
+class PhyUsbItf(NamedIntEnum):
     CCID = 0x1
     WCID = 0x2
     HID = 0x4
     KB = 0x8
 
-
-class PhyLedDriver(IntEnum):
+class PhyLedDriver(NamedIntEnum):
     PICO = 0x1
     PIMORONI = 0x2
     WS2812 = 0x3
     CYW43 = 0x4
     NEOPIXEL = 0x5
     NONE = 0xFF
-
 
 class PhyData:
     def __init__(self, **kwargs):
@@ -121,7 +115,7 @@ class PhyData:
         b = bytearray()
         if self.vidpid:
             b += bytes([PhyTag.VIDPID, 4])
-            b += bytes([self.vidpid[1], self.vidpid[0], self.vidpid[3], self.vidpid[2]])
+            b += bytes(self.vidpid[:4])
         if self.led_gpio is not None:
             b += bytes([PhyTag.LED_GPIO, 1, self.led_gpio & 0xFF])
         if self.led_brightness is not None:
