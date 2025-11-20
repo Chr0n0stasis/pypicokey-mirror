@@ -20,15 +20,6 @@
 import sys
 from .APDU import APDUResponse
 from .SecureChannel import SecureChannel
-
-try:
-    from smartcard.CardType import AnyCardType
-    from smartcard.CardRequest import CardRequest
-    from smartcard.Exceptions import CardRequestTimeoutException, CardConnectionException
-except ModuleNotFoundError:
-    print('ERROR: smartcard module not found! Install pyscard package.\nTry with `pip install pyscard`')
-    sys.exit(-1)
-
 from .RescuePicoKey import RescuePicoKey
 from .PhyData import PhyData
 from .core import NamedIntEnum
@@ -46,28 +37,36 @@ class Product(NamedIntEnum):
     OPENPGP = 3
 
 class PicoKey:
-    def __init__(self, slot=-1):
+    def __init__(self, slot=-1, force_rescue=False):
         self.__sc = None
-        cardtype = AnyCardType()
-        try:
-            # request card insertion
-            readers = None
-            if (slot >= 0):
-                readers = CardRequest().getReaders()
-                if (slot >= len(readers)):
-                    raise Exception('slot out of range')
-                readers = [readers[slot]]
-            cardrequest = CardRequest(timeout=1, cardType=cardtype, readers=readers)
-            self.__card = cardrequest.waitforcard().connection
-
-            # connect to the card and perform a few transmits
-            self.__card.connect()
-
-        except Exception:
+        if (force_rescue):
             try:
                 self.__card = RescuePicoKey()
             except Exception:
                 raise Exception('time-out: no card inserted')
+        else:
+            from smartcard.CardType import AnyCardType
+            from smartcard.CardRequest import CardRequest
+            cardtype = AnyCardType()
+            try:
+                # request card insertion
+                readers = None
+                if (slot >= 0):
+                    readers = CardRequest().getReaders()
+                    if (slot >= len(readers)):
+                        raise Exception('slot out of range')
+                    readers = [readers[slot]]
+                cardrequest = CardRequest(timeout=1, cardType=cardtype, readers=readers)
+                self.__card = cardrequest.waitforcard().connection
+
+                # connect to the card and perform a few transmits
+                self.__card.connect()
+
+            except Exception:
+                try:
+                    self.__card = RescuePicoKey()
+                except Exception:
+                    raise Exception('time-out: no card inserted')
         resp, sw1, sw2 = self.select_applet(rescue=True)
         try:
             resp, sw1, sw2 = self.select_applet(rescue=True)
@@ -108,7 +107,7 @@ class PicoKey:
 
         try:
             response, sw1, sw2 = self.__card.transmit(apdu)
-        except CardConnectionException:
+        except Exception:
             self.__card.reconnect()
             response, sw1, sw2 = self.__card.transmit(apdu)
 
@@ -144,7 +143,7 @@ class PicoKey:
 
         try:
             response, sw1, sw2 = self.__card.transmit(apdu)
-        except CardConnectionException:
+        except Exception:
             self.__card.reconnect()
             response, sw1, sw2 = self.__card.transmit(apdu)
 
