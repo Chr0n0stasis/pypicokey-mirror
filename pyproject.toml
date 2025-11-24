@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pypicokey"
+dynamic = ["version", "readme"]
+description = "PicoKey for Python"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+
+authors = [
+  { name = "Pol Henarejos", email = "pol.henarejos@cttc.es" }
+]
+
+dependencies = [
+    "setuptools",
+    "cryptography>=3.3",
+    "pyusb",
+    "pycvc",
+    "pyscard>=2.3.1",
+    "libusb",
+    "libusb_package",
+]
+
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Plugins",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3.8",
+    "Topic :: Security",
+    "Topic :: System :: Installation/Setup",
+    "Topic :: System :: Networking",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/polhenarejos/pypicokey"
+
+[tool.setuptools]
+packages = [
+    "picokey",
+    "picokey.core"
+]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = { attr = "picokey._version.__version__" }
+readme = { file = "README.md" }
