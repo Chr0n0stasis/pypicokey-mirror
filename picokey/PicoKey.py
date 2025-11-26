@@ -101,7 +101,10 @@ class PicoKey:
                     return None
                 return None
 
-            rdrs = readers()
+            try:
+                rdrs = readers()
+            except Exception as e:
+                rdrs = []
             if len(rdrs) > 0:
                 if (slot >= 0 and slot >= len(rdrs)):
                     raise Exception('Slot number out of range')
