@@ -17,6 +17,7 @@
  */
 """
 
+import time
 import usb.core
 import usb.util
 import libusb_package
@@ -162,3 +163,11 @@ class RescuePicoKey:
             self.powerOn()
         rapdu = self.__iccd.SendApdu(apdu=apdu)
         return rapdu[:-2], rapdu[-2], rapdu[-1]
+
+    def reconnect(self):
+        logger.debug("Reconnecting to device")
+        self.close()
+        time.sleep(1)
+        self.__init__()
+        logger.debug("Reconnected to device")
+        return self
