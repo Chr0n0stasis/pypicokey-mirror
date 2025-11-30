@@ -337,7 +337,7 @@ class PicoKey:
         if (data is None):
             try:
                 self.select_applet()
-                resp, sw = self.send(0x1E, cla=0x80, p1=0x00, ne=256)
+                resp, sw = self.send(0x1E, cla=0x80, p1=0x01, ne=256)
                 return PhyData.parse(resp)
             except Exception:
                 pass
