@@ -181,11 +181,23 @@ class PicoKey:
                 self.platform = Platform(resp[0])
                 self.product = Product(resp[1])
                 self.version = (resp[2], resp[3])
+                if (len(resp) >= 12):
+                    self.serial_number = int.from_bytes(resp[4:12], 'big')
+                else:
+                    self.serial_number = 0
+                logger.debug(f"Device platform: {self.platform.name}, product: {self.product.name}, version: {self.version}, serial number: {self.serial_number:016X}")
+            else:
+                logger.error("Unexpected response code during applet selection")
+                self.platform = Platform(Platform.RP2040)
+                self.product = Product(Product.UNKNOWN)
+                self.version = (0, 0)
+                self.serial_number = 0
         except APDUResponse:
             logger.error("APDU response error during applet selection")
             self.platform = Platform(Platform.RP2040)
             self.product = Product(Product.UNKNOWN)
             self.version = (0, 0)
+            self.serial_number = 0
 
     @property
     def device(self):

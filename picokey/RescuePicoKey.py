@@ -105,6 +105,10 @@ class RescuePicoKey:
     def device(self):
         return self.__dev
 
+    @property
+    def serial_number(self) -> str:
+        return usb.util.get_string(self.__dev, self.__dev.iSerialNumber)
+
     def close(self):
         logger.debug("Closing device")
         if self.__dev:
