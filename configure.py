@@ -20,7 +20,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -47,7 +51,7 @@ def prompt_int(text: str, default: Optional[int] = None, allow_empty=True) -> Op
         try:
             return int(s)
         except ValueError:
-            print("请输入整数或留空。")
+            print("Please enter an integer or leave empty. / 请输入整数或留空。")
 
 
 def prompt_bool(text: str, default: Optional[bool] = None) -> Optional[bool]:
@@ -60,19 +64,19 @@ def prompt_bool(text: str, default: Optional[bool] = None) -> Optional[bool]:
             return True
         if s.lower() in ("n", "no", "f", "0"):
             return False
-        print("请输入 y 或 n，或留空以保持当前值。")
+        print("Please enter y or n, or leave empty to keep current value. / 请输入 y 或 n，或留空以保持当前值。")
 
 
 def choose(text: str, choices: list[str], default: Optional[int] = None) -> Optional[str]:
     print(text)
     for i, c in enumerate(choices, start=1):
         print(f"  {i}. {c}")
-    sel = prompt_int("选择编号 (留空保持当前):", default=None)
+    sel = prompt_int("Select number (leave empty to keep current) / 选择编号 (留空保持当前):", default=None)
     if sel is None:
         return None
     if 1 <= sel <= len(choices):
         return choices[sel - 1]
-    print("无效选择，留空以保持当前。")
+    print("Invalid selection, leave empty to keep current. / 无效选择，留空以保持当前。")
     return None
 
 
@@ -81,7 +85,7 @@ def validate_vidpid(v: str) -> bool:
 
 
 def interactive_build() -> dict:
-    print("开始交互式 commissioning 配置。留空以保留当前值。")
+    print("Starting interactive commissioning configuration. Leave empty to keep current values. / 开始交互式 commissioning 配置。留空以保留当前值。")
 
     # Vendor / VID:PID
     VENDORS = {
@@ -109,7 +113,7 @@ def interactive_build() -> dict:
             if validate_vidpid(v):
                 vidpid = v.lower()
                 break
-            print("格式错误，形如 0123:abcd（十六进制）。")
+            print("Invalid format, should be like 0123:abcd (hexadecimal). / 格式错误，形如 0123:abcd（十六进制）。")
     elif vendor_choice in VENDORS:
         e = VENDORS[vendor_choice]
         vidpid = f"{e['vid']}:{e['pid']}"
@@ -118,7 +122,7 @@ def interactive_build() -> dict:
     led_brightness = prompt_int("LED brightness (0=off):", default=None)
 
     # Options
-    print("Options: 留空保持当前")
+    print("Options: leave empty to keep current / 留空保持当前")
     led_dimmable = prompt_bool("LED dimmable?", default=None)
     initialize = prompt_bool("Initialize device (will reset some state)?", default=None)
     secure_boot = prompt_bool("Enable Secure Boot? (WebUSB required)", default=None)
@@ -134,7 +138,7 @@ def interactive_build() -> dict:
 
     product_name = prompt("Product Name (max 14 chars):")
     if product_name is not None and len(product_name) > 14:
-        print("Product name 超过 14 字符，将被截断。")
+        print("Product name exceeds 14 characters, will be truncated. / Product name 超过 14 字符，将被截断。")
         product_name = product_name[:14]
 
     cfg = {
@@ -248,46 +252,145 @@ def build_phy_bytes(cfg: dict) -> bytes:
     return bytes(b)
 
 
+def check_linux_usb_permissions() -> tuple[bool, str]:
+    """检查Linux USB设备权限并提供解决方案"""
+    if platform.system() != "Linux":
+        return True, ""
+    
+    # 检查是否以root运行
+    if os.geteuid() == 0:
+        return True, "以root权限运行"
+    
+    # 检查用户组
+    try:
+        groups = subprocess.check_output(["groups"], text=True).strip()
+        has_plugdev = "plugdev" in groups
+        has_dialout = "dialout" in groups
+    except Exception:
+        has_plugdev = False
+        has_dialout = False
+    
+    if not (has_plugdev or has_dialout):
+        msg = (
+            "\n⚠️  USB Permission Warning / USB权限警告:\n"
+            "Accessing USB devices on Linux requires special permissions. Please choose one solution:\n"
+            "在Linux上访问USB设备需要特殊权限。\n\n"
+            "Run this script with sudo (temporary) / 使用sudo运行此脚本（临时方案）：\n"
+            "  sudo python3 configure.py\n"
+        )
+        return False, msg
+    
+    return True, ""
+
+
+def list_usb_devices() -> list[dict]:
+    """列出系统中的USB设备"""
+    devices = []
+    
+    if platform.system() == "Linux":
+        try:
+            # Try using lsusb / 尝试使用lsusb
+            output = subprocess.check_output(["lsusb"], text=True)
+            print("\nDetected USB devices / 检测到的USB设备：")
+            print(output)
+            
+            # Check for specific VID:PID / 尝试检查特定的VID:PID
+            for line in output.split("\n"):
+                if "20a0" in line.lower() or "1050" in line.lower():
+                    print(f"\n✓ Possible FIDO/Security Key device / 可能的FIDO/安全密钥设备: {line}")
+        except FileNotFoundError:
+            print("Tip: Install usbutils for better device detection (sudo apt install usbutils) / 提示: 安装 usbutils 以获取更好的设备检测")
+        except Exception as e:
+            print(f"Unable to list USB devices / 无法列出USB设备: {e}")
+    elif platform.system() == "Darwin":  # macOS
+        try:
+            output = subprocess.check_output(["system_profiler", "SPUSBDataType"], text=True)
+            print("\nDetected USB devices (partial) / 检测到的USB设备（部分）：")
+            # Only show first 50 lines to avoid excessive output / 只显示前50行以避免过多输出
+            lines = output.split("\n")[:50]
+            print("\n".join(lines))
+        except Exception as e:
+            print(f"Unable to list USB devices / 无法列出USB设备: {e}")
+    
+    return devices
+
+
 def save_config(cfg: dict, out: Path):
     out.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
-    print(f"配置已保存到 {out}")
+    print(f"Configuration saved to / 配置已保存到 {out}")
 
 
 def apply_stub(cfg: dict) -> None:
     print("\n-- APPLY (STUB) --")
-    print("脚本将在此处尝试应用配置到本机已连接的 PicoKey（本地方式）。")
-    print("配置摘要:")
+    print("This script will attempt to apply configuration to the locally connected PicoKey device. / 脚本将在此处尝试应用配置到本机已连接的 PicoKey（本地方式）。")
+    
+    # Linux权限检查
+    if platform.system() == "Linux":
+        has_perm, perm_msg = check_linux_usb_permissions()
+        if not has_perm:
+            print(perm_msg)
+            cont = input("\nDo you still want to try connecting to the device? / 是否仍要尝试连接设备？(y/N) ")
+            if cont.lower() != "y":
+                return
+    
+    # List USB devices for diagnosis / 列出USB设备帮助诊断
+    print("\nDetecting USB devices... / 正在检测USB设备...")
+    list_usb_devices()
+    
+    print("\nConfiguration summary / 配置摘要:")
     print(json.dumps(cfg, ensure_ascii=False, indent=2))
-    confirm = input("确认要尝试直接应用配置到本机已连接设备吗？(y/N) ")
+    confirm = input("\nConfirm to apply configuration to locally connected device? / 确认要尝试直接应用配置到本机已连接设备吗？(y/N) ")
     if confirm.lower() != "y":
-        print("取消应用。配置已保存到文件，可使用本地 picokey 库或其他工具手动应用。")
+        print("Apply cancelled. Configuration saved to file, can be applied manually using picokey library or other tools. / 取消应用。配置已保存到文件，可使用本地 picokey 库或其他工具手动应用。")
         return
     # 尝试使用本地 picokey 库把 PHY bytes 写入设备
     try:
         import picokey  # type: ignore
     except Exception as e:
-        print("未检测到可用的 picokey 库：", e)
-        print("请确保已安装 pypicokey 并在正确的 Python 环境下运行此脚本。")
+        print("picokey library not found / 未检测到可用的 picokey 库：", e)
+        print("Please ensure pypicokey is installed and running in the correct Python environment. / 请确保已安装 pypicokey 并在正确的 Python 环境下运行此脚本。")
+        if platform.system() == "Linux":
+            print("\nLinux installation tips / Linux安装提示：")
+            print("  pip3 install --user pypicokey")
+            print("  # Or use virtual environment / 或者使用虚拟环境")
+            print("  python3 -m venv venv")
+            print("  source venv/bin/activate")
+            print("  pip install pypicokey")
         return
 
     def apply_local(cfg: dict) -> None:
         try:
+            print("Attempting to connect to PicoKey device... / 正在尝试连接到 PicoKey 设备...")
             pk = picokey.PicoKey()
+            print("✓ Successfully connected to device / 成功连接到设备")
+        except PermissionError as e:
+            print(f"\n✗ Permission Error / 权限错误: {e}")
+            if platform.system() == "Linux":
+                print("\nThis is usually due to insufficient USB device permissions. Please refer to the permission configuration solutions above. / 这通常是因为USB设备权限不足。请参考上方的权限配置方案。")
+                print("Quick fix / 快速解决：sudo python3 configure.py --apply")
+            return
         except Exception as e:
-            print("无法连接到 PicoKey 设备：", e)
+            print(f"\n✗ Unable to connect to PicoKey device / 无法连接到 PicoKey 设备: {e}")
+            print(f"\nError type / 错误类型: {type(e).__name__}")
+            if platform.system() == "Linux":
+                print("\nTroubleshooting steps / 故障排查步骤：")
+                print("1. Confirm device is plugged in / 确认设备已插入: lsusb | grep -i 'fido\|yubi\|nitro'")
+                print("2. Check device permissions / 检查设备权限: ls -l /dev/bus/usb/*/*")
+                print("3. Check kernel messages / 检查内核消息: sudo dmesg | tail -20")
+                print("4. Try running with sudo / 尝试使用sudo运行")
             return
         try:
             phy = build_phy_bytes(cfg)
             if not phy:
-                print("未生成任何 PHY 字节，跳过写入。")
+                print("No PHY bytes generated, skipping write. / 未生成任何 PHY 字节，跳过写入。")
                 return
-            print(f"准备写入 {len(phy)} 字节到设备...")
+            print(f"Preparing to write {len(phy)} bytes to device... / 准备写入 {len(phy)} 字节到设备...")
             try:
                 # PicoKey.phy expects Optional[list[int]] for data
                 pk.phy(list(phy))
-                print("已成功写入 PHY 配置到设备。")
+                print("Successfully wrote PHY configuration to device. / 已成功写入 PHY 配置到设备。")
             except Exception as e:
-                print("写入设备时发生错误：", e)
+                print("Error writing to device / 写入设备时发生错误：", e)
         finally:
             try:
                 pk.close()
@@ -299,9 +402,9 @@ def apply_stub(cfg: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="PicoKey commissioning configurator")
-    parser.add_argument("--out", "-o", help="输出 JSON 文件路径", default=CFG_OUT)
-    parser.add_argument("--apply", action="store_true", help="交互式确认后尝试应用配置到设备（stub）")
-    parser.add_argument("--yes", "-y", action="store_true", help="自动确认所有提示（留空将被视为保留当前值）")
+    parser.add_argument("--out", "-o", help="Output JSON file path / 输出 JSON 文件路径", default=CFG_OUT)
+    parser.add_argument("--apply", action="store_true", help="Try to apply configuration to device after interactive confirmation / 交互式确认后尝试应用配置到设备")
+    parser.add_argument("--yes", "-y", action="store_true", help="Auto-confirm all prompts (empty input keeps current value) / 自动确认所有提示（留空将被视为保留当前值）")
     args = parser.parse_args()
 
     cfg = interactive_build()
@@ -309,9 +412,9 @@ def main() -> None:
     outpath = Path(args.out)
     if outpath.exists():
         if not args.yes:
-            overwrite = input(f"{outpath} 已存在，是否覆盖？(y/N) ")
+            overwrite = input(f"{outpath} already exists, overwrite? / 已存在，是否覆盖？(y/N) ")
             if overwrite.lower() != "y":
-                print("取消，未保存文件。")
+                print("Cancelled, file not saved. / 取消，未保存文件。")
                 return
     save_config(cfg, outpath)
 
