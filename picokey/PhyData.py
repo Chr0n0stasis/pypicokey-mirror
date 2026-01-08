@@ -19,6 +19,41 @@
 """
 
 from .core import NamedIntEnum
+from typing import Optional, Tuple
+
+
+# Predefined VID/PID for known vendors
+class KnownVendor:
+    """Predefined VID:PID combinations for known vendors."""
+    NITROKEY_HSM = (0x20a0, 0x4230)
+    NITROKEY_FIDO2 = (0x20a0, 0x42b1)
+    NITROKEY_PRO = (0x20a0, 0x4108)
+    NITROKEY_3 = (0x20a0, 0x42b2)
+    NITROKEY_START = (0x20a0, 0x4211)
+    YUBIKEY_4_5 = (0x1050, 0x0407)
+    YUBIKEY_NEO = (0x1050, 0x0116)
+    YUBICO_YUBIHSM = (0x1050, 0x0030)
+    FSIJ_GNUK = (0x234b, 0x0000)
+    GNUPG_EV = (0x1209, 0x2440)
+    PICO_DEFAULT = (0xFEFF, 0xFCFD)
+
+    @classmethod
+    def get_all(cls) -> dict:
+        """Return all predefined vendors as a dict."""
+        return {
+            "Nitrokey HSM": cls.NITROKEY_HSM,
+            "Nitrokey FIDO2": cls.NITROKEY_FIDO2,
+            "Nitrokey Pro": cls.NITROKEY_PRO,
+            "Nitrokey 3": cls.NITROKEY_3,
+            "Nitrokey Start": cls.NITROKEY_START,
+            "Yubikey 4/5": cls.YUBIKEY_4_5,
+            "Yubikey NEO": cls.YUBIKEY_NEO,
+            "Yubico YubiHSM": cls.YUBICO_YUBIHSM,
+            "FSIJ Gnuk": cls.FSIJ_GNUK,
+            "GnuPG e.V.": cls.GNUPG_EV,
+            "Pico Default": cls.PICO_DEFAULT,
+        }
+
 
 class PhyTag(NamedIntEnum):
     VIDPID = 0x0
@@ -186,3 +221,81 @@ class PhyData:
         if not isinstance(other, PhyData):
             return NotImplemented
         return vars(self) == vars(other)
+
+    def copy(self) -> "PhyData":
+        """Create a copy of this PhyData."""
+        return PhyData(
+            vidpid=bytearray(self.vidpid) if self.vidpid else None,
+            led_gpio=self.led_gpio,
+            led_brightness=self.led_brightness,
+            opts=self.opts,
+            up_btn=self.up_btn,
+            usb_product=self.usb_product,
+            enabled_curves=self.enabled_curves,
+            enabled_usb_itf=self.enabled_usb_itf,
+            led_driver=self.led_driver,
+        )
+
+    def set_vidpid(self, vid: int, pid: int) -> "PhyData":
+        """Set VID and PID. Returns self for chaining."""
+        self.vidpid = bytearray(4)
+        self.vid = vid
+        self.pid = pid
+        return self
+
+    def set_vidpid_from_vendor(self, vendor: Tuple[int, int]) -> "PhyData":
+        """Set VID/PID from a KnownVendor tuple. Returns self for chaining."""
+        return self.set_vidpid(vendor[0], vendor[1])
+
+    def set_led(self, gpio: Optional[int] = None, brightness: Optional[int] = None, 
+                driver: Optional[int] = None) -> "PhyData":
+        """Set LED configuration. Returns self for chaining."""
+        if gpio is not None:
+            self.led_gpio = gpio
+        if brightness is not None:
+            self.led_brightness = brightness
+        if driver is not None:
+            self.led_driver = driver
+        return self
+
+    def set_option(self, opt: int, enabled: bool = True) -> "PhyData":
+        """Set or clear a physical option flag. Returns self for chaining."""
+        if enabled:
+            self.opts |= opt
+        else:
+            self.opts &= ~opt
+        return self
+
+    def set_curve(self, curve: int, enabled: bool = True) -> "PhyData":
+        """Enable or disable a cryptographic curve. Returns self for chaining."""
+        if self.enabled_curves is None:
+            self.enabled_curves = 0
+        if enabled:
+            self.enabled_curves |= curve
+        else:
+            self.enabled_curves &= ~curve
+        return self
+
+    @property
+    def is_led_dimmable(self) -> bool:
+        return bool(self.opts & PhyOpt.DIMM)
+
+    @is_led_dimmable.setter
+    def is_led_dimmable(self, value: bool):
+        self.set_option(PhyOpt.DIMM, value)
+
+    @property
+    def is_power_reset_disabled(self) -> bool:
+        return bool(self.opts & PhyOpt.DISABLE_POWER_RESET)
+
+    @is_power_reset_disabled.setter
+    def is_power_reset_disabled(self, value: bool):
+        self.set_option(PhyOpt.DISABLE_POWER_RESET, value)
+
+    @property
+    def is_led_steady(self) -> bool:
+        return bool(self.opts & PhyOpt.LED_STEADY)
+
+    @is_led_steady.setter
+    def is_led_steady(self, value: bool):
+        self.set_option(PhyOpt.LED_STEADY, value)

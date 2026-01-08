@@ -17,13 +17,13 @@
  */
 """
 
-from typing import Optional
+from typing import Optional, Tuple, Union
 import threading
 from .APDU import APDUResponse
 from .SecureChannel import SecureChannel
 from .RescuePicoKey import RescuePicoKey
 from .RescueMonitor import RescueMonitor, RescueMonitorObserver
-from .PhyData import PhyData
+from .PhyData import PhyData, PhyOpt, PhyCurve, PhyLedDriver, KnownVendor
 from .core import NamedIntEnum
 from .core.exceptions import PicoKeyNotFoundError, PicoKeyInvalidStateError
 import usb.core
@@ -397,3 +397,180 @@ class PicoKey:
         logger.debug("Rebooting device into BOOTSEL mode" if bootsel else "Rebooting device into normal mode")
         self.select_applet()
         self.send(0x1F, cla=0x80, p1=0x01 if bootsel else 0x00)
+
+    # ========== PHY Configuration Methods ==========
+
+    def get_phy(self) -> Optional[PhyData]:
+        """Read the current physical configuration from the device.
+        
+        Returns:
+            PhyData object with current configuration, or None on error.
+        """
+        return self.phy(data=None)
+
+    def set_phy(self, phy_data: PhyData) -> None:
+        """Write physical configuration to the device.
+        
+        Args:
+            phy_data: PhyData object containing the configuration to write.
+        """
+        data = phy_data.serialize()
+        if data:
+            self.phy(data=list(data))
+            logger.debug(f"Wrote {len(data)} bytes of PHY configuration")
+        else:
+            logger.warning("No PHY data to write")
+
+    def set_vidpid(self, vid: int, pid: int) -> None:
+        """Set the USB Vendor ID and Product ID.
+        
+        Args:
+            vid: USB Vendor ID (16-bit)
+            pid: USB Product ID (16-bit)
+        
+        Note: Device needs to be rebooted for changes to take effect.
+        """
+        logger.debug(f"Setting VID:PID to {vid:04X}:{pid:04X}")
+        phy = self.get_phy() or PhyData()
+        phy.set_vidpid(vid, pid)
+        self.set_phy(phy)
+
+    def set_vidpid_from_vendor(self, vendor: Tuple[int, int]) -> None:
+        """Set VID/PID from a predefined vendor tuple.
+        
+        Args:
+            vendor: A tuple (vid, pid) from KnownVendor class.
+        
+        Example:
+            pk.set_vidpid_from_vendor(KnownVendor.NITROKEY_FIDO2)
+        """
+        self.set_vidpid(vendor[0], vendor[1])
+
+    def set_led_gpio(self, gpio: int) -> None:
+        """Set the LED GPIO pin number.
+        
+        Args:
+            gpio: GPIO pin number (0-255)
+        """
+        logger.debug(f"Setting LED GPIO to {gpio}")
+        phy = self.get_phy() or PhyData()
+        phy.led_gpio = gpio
+        self.set_phy(phy)
+
+    def set_led_brightness(self, brightness: int) -> None:
+        """Set the LED brightness level.
+        
+        Args:
+            brightness: Brightness level (0=off, 255=max)
+        """
+        logger.debug(f"Setting LED brightness to {brightness}")
+        phy = self.get_phy() or PhyData()
+        phy.led_brightness = brightness
+        self.set_phy(phy)
+
+    def set_led_driver(self, driver: int) -> None:
+        """Set the LED driver type.
+        
+        Args:
+            driver: One of PhyLedDriver values (PICO, PIMORONI, WS2812, CYW43, NEOPIXEL, NONE)
+        """
+        logger.debug(f"Setting LED driver to {driver}")
+        phy = self.get_phy() or PhyData()
+        phy.led_driver = driver
+        self.set_phy(phy)
+
+    def set_led(self, gpio: Optional[int] = None, brightness: Optional[int] = None,
+                driver: Optional[int] = None) -> None:
+        """Set LED configuration (GPIO, brightness, and/or driver).
+        
+        Args:
+            gpio: GPIO pin number (optional)
+            brightness: Brightness level (optional)
+            driver: LED driver type from PhyLedDriver (optional)
+        """
+        phy = self.get_phy() or PhyData()
+        phy.set_led(gpio=gpio, brightness=brightness, driver=driver)
+        self.set_phy(phy)
+
+    def set_phy_option(self, option: int, enabled: bool = True) -> None:
+        """Set or clear a physical option flag.
+        
+        Args:
+            option: One of PhyOpt values (WCID, DIMM, DISABLE_POWER_RESET, LED_STEADY)
+            enabled: True to enable, False to disable
+        """
+        logger.debug(f"Setting PHY option {option} to {enabled}")
+        phy = self.get_phy() or PhyData()
+        phy.set_option(option, enabled)
+        self.set_phy(phy)
+
+    def set_led_dimmable(self, enabled: bool = True) -> None:
+        """Enable or disable LED dimming.
+        
+        Args:
+            enabled: True to enable dimming, False to disable
+        """
+        self.set_phy_option(PhyOpt.DIMM, enabled)
+
+    def set_power_reset_disabled(self, disabled: bool = True) -> None:
+        """Enable or disable power-cycle reset.
+        
+        Args:
+            disabled: True to disable power-cycle reset, False to enable it
+        """
+        self.set_phy_option(PhyOpt.DISABLE_POWER_RESET, disabled)
+
+    def set_led_steady(self, enabled: bool = True) -> None:
+        """Enable or disable steady LED mode (always on).
+        
+        Args:
+            enabled: True for steady LED, False for normal blinking
+        """
+        self.set_phy_option(PhyOpt.LED_STEADY, enabled)
+
+    def set_presence_timeout(self, timeout: int) -> None:
+        """Set the user presence button timeout.
+        
+        Args:
+            timeout: Timeout in seconds (0 to disable)
+        """
+        logger.debug(f"Setting presence timeout to {timeout}s")
+        phy = self.get_phy() or PhyData()
+        phy.up_btn = timeout
+        self.set_phy(phy)
+
+    def set_usb_product_name(self, name: str) -> None:
+        """Set the USB product name string.
+        
+        Args:
+            name: Product name (max 14 characters, ASCII only)
+        """
+        if len(name) > 14:
+            logger.warning(f"Product name '{name}' exceeds 14 chars, truncating")
+            name = name[:14]
+        logger.debug(f"Setting USB product name to '{name}'")
+        phy = self.get_phy() or PhyData()
+        phy.usb_product = name
+        self.set_phy(phy)
+
+    def set_curve_enabled(self, curve: int, enabled: bool = True) -> None:
+        """Enable or disable a cryptographic curve.
+        
+        Args:
+            curve: One of PhyCurve values
+            enabled: True to enable, False to disable
+        """
+        logger.debug(f"Setting curve {curve} to {enabled}")
+        phy = self.get_phy() or PhyData()
+        phy.set_curve(curve, enabled)
+        self.set_phy(phy)
+
+    def enable_secp256k1(self, enabled: bool = True) -> None:
+        """Enable or disable the secp256k1 curve (used by Bitcoin/Ethereum).
+        
+        Args:
+            enabled: True to enable, False to disable
+        
+        Note: Some platforms (like Android) may not support this curve.
+        """
+        self.set_curve_enabled(PhyCurve.SECP256K1, enabled)

@@ -2,17 +2,14 @@
 """Interactive commissioning helper for PicoKey
 
 This script collects commissioning options (VID:PID, LED, options,
-product name, curves, etc.) and writes them to a JSON file
-(`commission_config.json`). It can optionally attempt to apply the
-configuration when `--apply` is passed; the apply action is a safe
-stub and will ask for confirmation before performing any hardware
-changes.
+product name, curves, etc.) and applies them to a connected PicoKey device
+using the pypicokey library.
 
 Usage:
-  python configure.py        # interactive
-  python configure.py --out mycfg.json
-  python configure.py --yes --out mycfg.json
-  python configure.py --apply  # will prompt before touching device
+  python configure.py              # interactive mode, apply to device
+  python configure.py --save       # save config to JSON file
+  python configure.py --load cfg.json --apply  # load and apply config
+  python configure.py --show       # show current device configuration
 
 """
 
@@ -28,9 +25,31 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# Import picokey modules
+try:
+    from picokey import (
+        PicoKey, PhyData, PhyOpt, PhyCurve, PhyLedDriver, KnownVendor,
+        PicoKeyNotFoundError, PicoKeyInvalidStateError
+    )
+    PICOKEY_AVAILABLE = True
+except ImportError as e:
+    PICOKEY_AVAILABLE = False
+    PICOKEY_IMPORT_ERROR = str(e)
+
 
 CFG_OUT = "commission_config.json"
 VIDPID_RE = re.compile(r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{4}$")
+
+# LED Driver name mapping
+LED_DRIVER_MAP = {
+    "PICO": PhyLedDriver.PICO if PICOKEY_AVAILABLE else 0x1,
+    "PIMORONI": PhyLedDriver.PIMORONI if PICOKEY_AVAILABLE else 0x2,
+    "WS2812": PhyLedDriver.WS2812 if PICOKEY_AVAILABLE else 0x3,
+    "CYW43": PhyLedDriver.CYW43 if PICOKEY_AVAILABLE else 0x4,
+    "NEOPIXEL": PhyLedDriver.NEOPIXEL if PICOKEY_AVAILABLE else 0x5,
+    "NONE": PhyLedDriver.NONE if PICOKEY_AVAILABLE else 0xFF,
+}
+LED_DRIVER_NAMES = list(LED_DRIVER_MAP.keys())
 
 
 def prompt(text: str, default: Optional[str] = None) -> Optional[str]:
@@ -84,184 +103,16 @@ def validate_vidpid(v: str) -> bool:
     return bool(VIDPID_RE.match(v))
 
 
-def interactive_build() -> dict:
-    print("Starting interactive commissioning configuration. Leave empty to keep current values. / 开始交互式 commissioning 配置。留空以保留当前值。")
-
-    # Vendor / VID:PID
-    VENDORS = {
-        "Nitrokey HSM": {"vid": "20a0", "pid": "4230"},
-        "Nitrokey FIDO2": {"vid": "20a0", "pid": "42b1"},
-        "Nitrokey Pro": {"vid": "20a0", "pid": "4108"},
-        "Nitrokey 3": {"vid": "20a0", "pid": "42b2"},
-        "Nitrokey Start": {"vid": "20a0", "pid": "4211"},
-        "Yubikey 4/5": {"vid": "1050", "pid": "0407"},
-        "Yubikey NEO": {"vid": "1050", "pid": "0116"},
-        "Yubico YubiHSM": {"vid": "1050", "pid": "0030"},
-        "FSIJ Gnuk": {"vid": "234b", "pid": "0000"},
-        "GnuPG e.V.": {"vid": "1209", "pid": "2440"},
-    }
-
-    vendor_choices = list(VENDORS.keys()) + ["Custom VID:PID"]
-    vendor_choice = choose("Select a known vendor...", vendor_choices, None)
-    vidpid = None
-    if vendor_choice == "Custom VID:PID":
-        while True:
-            v = prompt("Type VID:PID in hex form (0123:abcd):")
-            if v is None:
-                vidpid = None
-                break
-            if validate_vidpid(v):
-                vidpid = v.lower()
-                break
-            print("Invalid format, should be like 0123:abcd (hexadecimal). / 格式错误，形如 0123:abcd（十六进制）。")
-    elif vendor_choice in VENDORS:
-        e = VENDORS[vendor_choice]
-        vidpid = f"{e['vid']}:{e['pid']}"
-
-    presence = prompt_int("Presence Button Timeout (seconds, 0=disabled):", default=None)
-    led_brightness = prompt_int("LED brightness (0=off):", default=None)
-
-    # Options
-    print("Options: leave empty to keep current / 留空保持当前")
-    led_dimmable = prompt_bool("LED dimmable?", default=None)
-    initialize = prompt_bool("Initialize device (will reset some state)?", default=None)
-    secure_boot = prompt_bool("Enable Secure Boot? (WebUSB required)", default=None)
-    secure_lock = prompt_bool("Enable Secure Lock? (WebUSB required)", default=None)
-    power_cycle = prompt_bool("Power Cycle on Reset? (Pico FIDO only)", default=None)
-    led_steady = prompt_bool("LED steady (always on)?", default=None)
-    secp256k1 = prompt_bool("Enable secp256k1 curve? (Android may not support)", default=None)
-
-    led_gpio = prompt_int("LED GPIO pin (number):", default=None)
-
-    drivers = ["PICO", "PIMORONI", "WS2812", "CYW43", "NEOPIXEL", "NONE"]
-    led_driver = choose("Select a LED driver:", drivers, None)
-
-    product_name = prompt("Product Name (max 14 chars):")
-    if product_name is not None and len(product_name) > 14:
-        print("Product name exceeds 14 characters, will be truncated. / Product name 超过 14 字符，将被截断。")
-        product_name = product_name[:14]
-
-    cfg = {
-        "vendor_choice": vendor_choice,
-        "vidpid": vidpid,
-        "presence_timeout": presence,
-        "led_brightness": led_brightness,
-        "options": {
-            "led_dimmable": led_dimmable,
-            "initialize": initialize,
-            "secure_boot": secure_boot,
-            "secure_lock": secure_lock,
-            "power_cycle_on_reset": power_cycle,
-            "led_steady": led_steady,
-            "secp256k1": secp256k1,
-        },
-        "led_gpio": led_gpio,
-        "led_driver": led_driver,
-        "product_name": product_name,
-    }
-
-    return cfg
-
-
-def build_phy_bytes(cfg: dict) -> bytes:
-    # mirror getPhyData() TLV construction
-    PHY_VID = 0x0
-    PHY_LED_GPIO = 0x4
-    PHY_LED_BTNESS = 0x5
-    PHY_OPTS = 0x6
-    PHY_OPT_WCID = 0x1
-    PHY_OPT_DIMM = 0x2
-    PHY_OPT_DISABLE_POWER_RESET = 0x4
-    PHY_OPT_LED_STEADY = 0x8
-    PHY_UP_BUTTON = 0x8
-    PHY_USB_PRODUCT = 0x9
-    PHY_ENABLED_CURVES = 0xA
-    PHY_LED_DRIVER = 0xC
-
-    PHY_CURVE_SECP256K1 = 0x8
-
-    PHY_LED_DRIVER_SINGLE = 0x1
-    PHY_LED_DRIVER_WS2812 = 0x3
-
-    b = bytearray()
-
-    # VID/PID
-    vidpid = cfg.get("vidpid")
-    if vidpid:
-        try:
-            vid_str, pid_str = vidpid.split(":")
-            vid = int(vid_str, 16)
-            pid = int(pid_str, 16)
-            b += bytes([PHY_VID, 4, (vid >> 8) & 0xFF, vid & 0xFF, (pid >> 8) & 0xFF, pid & 0xFF])
-        except Exception:
-            pass
-
-    # LED GPIO
-    lg = cfg.get("led_gpio")
-    if lg is not None:
-        b += bytes([PHY_LED_GPIO, 1, int(lg) & 0xFF])
-
-    # LED brightness
-    lb = cfg.get("led_brightness")
-    if lb is None:
-        lb = 0
-    b += bytes([PHY_LED_BTNESS, 1, int(lb) & 0xFF])
-
-    # opts
-    opts = 0
-    opts_map = cfg.get("options", {})
-    if opts_map.get("led_dimmable"):
-        opts |= PHY_OPT_DIMM
-    if not opts_map.get("power_cycle_on_reset"):
-        opts |= PHY_OPT_DISABLE_POWER_RESET
-    if opts_map.get("led_steady"):
-        opts |= PHY_OPT_LED_STEADY
-
-    b += bytes([PHY_OPTS, 2, (opts >> 8) & 0xFF, opts & 0xFF])
-
-    # Presence / Up button timeout
-    btn = cfg.get("presence_timeout")
-    if btn is None:
-        btn = 0
-    b += bytes([PHY_UP_BUTTON, 1, int(btn) & 0xFF])
-
-    # curves
-    curves = 0
-    if opts_map.get("secp256k1"):
-        curves |= PHY_CURVE_SECP256K1
-    b += bytes([PHY_ENABLED_CURVES, 4, (curves >> 24) & 0xFF, (curves >> 16) & 0xFF, (curves >> 8) & 0xFF, curves & 0xFF])
-
-    # USB product string
-    pn = cfg.get("product_name")
-    if pn:
-        s = pn.encode("ascii", "ignore")
-        b += bytes([PHY_USB_PRODUCT, len(s) + 1]) + s + b"\x00"
-
-    # led driver
-    ld = cfg.get("led_driver")
-    leddrv = 0
-    if ld is not None:
-        if ld.upper().startswith("WS"):
-            leddrv = PHY_LED_DRIVER_WS2812
-        elif ld.upper().startswith("PICO"):
-            leddrv = PHY_LED_DRIVER_SINGLE
-        elif ld.upper() == "NONE":
-            leddrv = 0xFF
-    b += bytes([PHY_LED_DRIVER, 1, leddrv & 0xFF])
-
-    return bytes(b)
-
+# ==================== System Helpers ====================
 
 def check_linux_usb_permissions() -> tuple[bool, str]:
-    """检查Linux USB设备权限并提供解决方案"""
+    """Check Linux USB device permissions and provide solutions."""
     if platform.system() != "Linux":
         return True, ""
     
-    # 检查是否以root运行
     if os.geteuid() == 0:
-        return True, "以root权限运行"
+        return True, "Running as root"
     
-    # 检查用户组
     try:
         groups = subprocess.check_output(["groups"], text=True).strip()
         has_plugdev = "plugdev" in groups
@@ -273,153 +124,377 @@ def check_linux_usb_permissions() -> tuple[bool, str]:
     if not (has_plugdev or has_dialout):
         msg = (
             "\n⚠️  USB Permission Warning / USB权限警告:\n"
-            "Accessing USB devices on Linux requires special permissions. Please choose one solution:\n"
+            "Accessing USB devices on Linux requires special permissions.\n"
             "在Linux上访问USB设备需要特殊权限。\n\n"
-            "Run this script with sudo (temporary) / 使用sudo运行此脚本（临时方案）：\n"
-            "  sudo python3 configure.py\n"
+            "Solution / 解决方案：sudo python3 configure.py\n"
         )
         return False, msg
     
     return True, ""
 
 
-def list_usb_devices() -> list[dict]:
-    """列出系统中的USB设备"""
-    devices = []
-    
+def list_usb_devices() -> None:
+    """List USB devices for diagnostics."""
     if platform.system() == "Linux":
         try:
-            # Try using lsusb / 尝试使用lsusb
             output = subprocess.check_output(["lsusb"], text=True)
             print("\nDetected USB devices / 检测到的USB设备：")
-            print(output)
-            
-            # Check for specific VID:PID / 尝试检查特定的VID:PID
             for line in output.split("\n"):
-                if "20a0" in line.lower() or "1050" in line.lower():
-                    print(f"\n✓ Possible FIDO/Security Key device / 可能的FIDO/安全密钥设备: {line}")
-        except FileNotFoundError:
-            print("Tip: Install usbutils for better device detection (sudo apt install usbutils) / 提示: 安装 usbutils 以获取更好的设备检测")
-        except Exception as e:
-            print(f"Unable to list USB devices / 无法列出USB设备: {e}")
-    elif platform.system() == "Darwin":  # macOS
+                if any(vid in line.lower() for vid in ["20a0", "1050", "feff", "234b", "1209"]):
+                    print(f"  ✓ {line}")
+        except Exception:
+            pass
+    elif platform.system() == "Darwin":
         try:
-            output = subprocess.check_output(["system_profiler", "SPUSBDataType"], text=True)
-            print("\nDetected USB devices (partial) / 检测到的USB设备（部分）：")
-            # Only show first 50 lines to avoid excessive output / 只显示前50行以避免过多输出
-            lines = output.split("\n")[:50]
-            print("\n".join(lines))
-        except Exception as e:
-            print(f"Unable to list USB devices / 无法列出USB设备: {e}")
+            subprocess.check_output(["system_profiler", "SPUSBDataType"], text=True, timeout=5)
+            print("\nUSB devices detected (excerpt) / 检测到的USB设备（摘要）")
+        except Exception:
+            pass
+
+
+# ==================== Interactive Configuration ====================
+
+def interactive_build(current_phy: Optional[PhyData] = None) -> PhyData:
+    """Build PhyData interactively, optionally starting from current device config."""
+    print("\n" + "="*60)
+    print("PicoKey Interactive Configuration / PicoKey 交互式配置")
+    print("="*60)
+    print("Leave empty to keep current values. / 留空以保留当前值。\n")
+
+    # Start with current config or empty
+    phy = current_phy.copy() if current_phy else PhyData()
+
+    # Show current VID:PID if available
+    if phy.vid is not None and phy.pid is not None:
+        print(f"Current VID:PID / 当前 VID:PID: {phy.vid:04x}:{phy.pid:04x}")
+
+    # Vendor / VID:PID selection - use KnownVendor from picokey
+    vendor_names = list(KnownVendor.get_all().keys()) + ["Custom VID:PID"]
+    vendor_choice = choose("\nSelect a known vendor / 选择已知厂商:", vendor_names, None)
     
-    return devices
+    if vendor_choice == "Custom VID:PID":
+        while True:
+            v = prompt("Type VID:PID in hex form (e.g. 20a0:42b1):")
+            if v is None:
+                break
+            if validate_vidpid(v):
+                vid_str, pid_str = v.split(":")
+                phy.set_vidpid(int(vid_str, 16), int(pid_str, 16))
+                break
+            print("Invalid format. Use: 0123:abcd (hex) / 格式错误，形如 0123:abcd")
+    elif vendor_choice and vendor_choice in KnownVendor.get_all():
+        vendor_tuple = KnownVendor.get_all()[vendor_choice]
+        phy.set_vidpid_from_vendor(vendor_tuple)
+        print(f"  → VID:PID set to {vendor_tuple[0]:04x}:{vendor_tuple[1]:04x}")
 
+    # LED Configuration
+    print("\n--- LED Configuration / LED 配置 ---")
+    if phy.led_gpio is not None:
+        print(f"Current LED GPIO: {phy.led_gpio}")
+    led_gpio = prompt_int("LED GPIO pin (number):", default=phy.led_gpio)
+    if led_gpio is not None:
+        phy.led_gpio = led_gpio
 
-def save_config(cfg: dict, out: Path):
-    out.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
-    print(f"Configuration saved to / 配置已保存到 {out}")
+    if phy.led_brightness is not None:
+        print(f"Current LED brightness: {phy.led_brightness}")
+    led_brightness = prompt_int("LED brightness (0-255, 0=off):", default=phy.led_brightness)
+    if led_brightness is not None:
+        phy.led_brightness = led_brightness
 
-
-def apply_stub(cfg: dict) -> None:
-    print("\n-- APPLY (STUB) --")
-    print("This script will attempt to apply configuration to the locally connected PicoKey device. / 脚本将在此处尝试应用配置到本机已连接的 PicoKey（本地方式）。")
+    # LED Driver
+    current_driver_name = None
+    if phy.led_driver is not None:
+        for name, val in LED_DRIVER_MAP.items():
+            if val == phy.led_driver:
+                current_driver_name = name
+                break
+        if current_driver_name:
+            print(f"Current LED driver: {current_driver_name}")
     
-    # Linux权限检查
+    led_driver_choice = choose("Select LED driver / 选择 LED 驱动:", LED_DRIVER_NAMES, None)
+    if led_driver_choice:
+        phy.led_driver = LED_DRIVER_MAP[led_driver_choice]
+
+    # Options
+    print("\n--- Options / 选项 ---")
+    
+    led_dimmable = prompt_bool(f"LED dimmable? (current: {phy.is_led_dimmable})", default=None)
+    if led_dimmable is not None:
+        phy.is_led_dimmable = led_dimmable
+
+    power_cycle = prompt_bool(f"Enable power-cycle reset? (current: {not phy.is_power_reset_disabled})", default=None)
+    if power_cycle is not None:
+        phy.is_power_reset_disabled = not power_cycle
+
+    led_steady = prompt_bool(f"LED steady (always on)? (current: {phy.is_led_steady})", default=None)
+    if led_steady is not None:
+        phy.is_led_steady = led_steady
+
+    # Presence timeout
+    print("\n--- User Presence / 用户存在检测 ---")
+    if phy.up_btn is not None:
+        print(f"Current presence timeout: {phy.up_btn}s")
+    presence = prompt_int("Presence button timeout (seconds, 0=disabled):", default=phy.up_btn)
+    if presence is not None:
+        phy.up_btn = presence
+
+    # Curves
+    print("\n--- Cryptographic Curves / 加密曲线 ---")
+    current_secp256k1 = bool(phy.enabled_curves and (phy.enabled_curves & PhyCurve.SECP256K1))
+    secp256k1 = prompt_bool(f"Enable secp256k1? (current: {current_secp256k1}, note: Android may not support)", default=None)
+    if secp256k1 is not None:
+        phy.set_curve(PhyCurve.SECP256K1, secp256k1)
+
+    # USB Product Name
+    print("\n--- USB Product Name / USB 产品名称 ---")
+    if phy.usb_product:
+        print(f"Current product name: {phy.usb_product}")
+    product_name = prompt("Product name (max 14 chars):")
+    if product_name is not None:
+        if len(product_name) > 14:
+            print("Truncating to 14 characters. / 截断至14字符。")
+            product_name = product_name[:14]
+        phy.usb_product = product_name
+
+    return phy
+
+
+def phy_to_dict(phy: PhyData) -> dict:
+    """Convert PhyData to a JSON-serializable dict."""
+    cfg = {}
+    if phy.vid is not None and phy.pid is not None:
+        cfg["vidpid"] = f"{phy.vid:04x}:{phy.pid:04x}"
+    if phy.led_gpio is not None:
+        cfg["led_gpio"] = phy.led_gpio
+    if phy.led_brightness is not None:
+        cfg["led_brightness"] = phy.led_brightness
+    if phy.led_driver is not None:
+        for name, val in LED_DRIVER_MAP.items():
+            if val == phy.led_driver:
+                cfg["led_driver"] = name
+                break
+    cfg["options"] = {
+        "led_dimmable": phy.is_led_dimmable,
+        "power_cycle_on_reset": not phy.is_power_reset_disabled,
+        "led_steady": phy.is_led_steady,
+    }
+    if phy.up_btn is not None:
+        cfg["presence_timeout"] = phy.up_btn
+    if phy.enabled_curves is not None:
+        cfg["secp256k1"] = bool(phy.enabled_curves & PhyCurve.SECP256K1)
+    if phy.usb_product:
+        cfg["product_name"] = phy.usb_product
+    return cfg
+
+
+def dict_to_phy(cfg: dict) -> PhyData:
+    """Convert a config dict to PhyData."""
+    phy = PhyData()
+    
+    vidpid = cfg.get("vidpid")
+    if vidpid and validate_vidpid(vidpid):
+        vid_str, pid_str = vidpid.split(":")
+        phy.set_vidpid(int(vid_str, 16), int(pid_str, 16))
+    
+    if cfg.get("led_gpio") is not None:
+        phy.led_gpio = cfg["led_gpio"]
+    if cfg.get("led_brightness") is not None:
+        phy.led_brightness = cfg["led_brightness"]
+    
+    led_driver = cfg.get("led_driver")
+    if led_driver and led_driver in LED_DRIVER_MAP:
+        phy.led_driver = LED_DRIVER_MAP[led_driver]
+    
+    opts = cfg.get("options", {})
+    if opts.get("led_dimmable"):
+        phy.set_option(PhyOpt.DIMM, True)
+    if not opts.get("power_cycle_on_reset", True):
+        phy.set_option(PhyOpt.DISABLE_POWER_RESET, True)
+    if opts.get("led_steady"):
+        phy.set_option(PhyOpt.LED_STEADY, True)
+    
+    if cfg.get("presence_timeout") is not None:
+        phy.up_btn = cfg["presence_timeout"]
+    
+    if cfg.get("secp256k1"):
+        phy.set_curve(PhyCurve.SECP256K1, True)
+    
+    if cfg.get("product_name"):
+        phy.usb_product = cfg["product_name"]
+    
+    return phy
+
+
+# ==================== Device Operations ====================
+
+def connect_device() -> Optional[PicoKey]:
+    """Connect to PicoKey device with error handling."""
+    if not PICOKEY_AVAILABLE:
+        print(f"✗ picokey library not available: {PICOKEY_IMPORT_ERROR}")
+        print("\nInstall with: pip install pypicokey")
+        return None
+    
+    # Linux permission check
     if platform.system() == "Linux":
         has_perm, perm_msg = check_linux_usb_permissions()
         if not has_perm:
             print(perm_msg)
-            cont = input("\nDo you still want to try connecting to the device? / 是否仍要尝试连接设备？(y/N) ")
-            if cont.lower() != "y":
-                return
     
-    # List USB devices for diagnosis / 列出USB设备帮助诊断
-    print("\nDetecting USB devices... / 正在检测USB设备...")
-    list_usb_devices()
-    
-    print("\nConfiguration summary / 配置摘要:")
-    print(json.dumps(cfg, ensure_ascii=False, indent=2))
-    confirm = input("\nConfirm to apply configuration to locally connected device? / 确认要尝试直接应用配置到本机已连接设备吗？(y/N) ")
-    if confirm.lower() != "y":
-        print("Apply cancelled. Configuration saved to file, can be applied manually using picokey library or other tools. / 取消应用。配置已保存到文件，可使用本地 picokey 库或其他工具手动应用。")
-        return
-    # 尝试使用本地 picokey 库把 PHY bytes 写入设备
     try:
-        import picokey  # type: ignore
-    except Exception as e:
-        print("picokey library not found / 未检测到可用的 picokey 库：", e)
-        print("Please ensure pypicokey is installed and running in the correct Python environment. / 请确保已安装 pypicokey 并在正确的 Python 环境下运行此脚本。")
+        print("Connecting to PicoKey device... / 正在连接 PicoKey 设备...")
+        pk = PicoKey()
+        print(f"✓ Connected: {pk.platform.name} / {pk.product.name} v{pk.version[0]}.{pk.version[1]}")
+        if pk.serial_number:
+            print(f"  Serial: {pk.serial_number:016X}")
+        return pk
+    except PicoKeyNotFoundError:
+        print("✗ No PicoKey device found. / 未找到 PicoKey 设备。")
+        list_usb_devices()
+        return None
+    except PermissionError as e:
+        print(f"✗ Permission error: {e}")
         if platform.system() == "Linux":
-            print("\nLinux installation tips / Linux安装提示：")
-            print("  pip3 install --user pypicokey")
-            print("  # Or use virtual environment / 或者使用虚拟环境")
-            print("  python3 -m venv venv")
-            print("  source venv/bin/activate")
-            print("  pip install pypicokey")
-        return
+            print("Try: sudo python3 configure.py")
+        return None
+    except Exception as e:
+        print(f"✗ Connection error: {e}")
+        return None
 
-    def apply_local(cfg: dict) -> None:
-        try:
-            print("Attempting to connect to PicoKey device... / 正在尝试连接到 PicoKey 设备...")
-            pk = picokey.PicoKey()
-            print("✓ Successfully connected to device / 成功连接到设备")
-        except PermissionError as e:
-            print(f"\n✗ Permission Error / 权限错误: {e}")
-            if platform.system() == "Linux":
-                print("\nThis is usually due to insufficient USB device permissions. Please refer to the permission configuration solutions above. / 这通常是因为USB设备权限不足。请参考上方的权限配置方案。")
-                print("Quick fix / 快速解决：sudo python3 configure.py --apply")
-            return
-        except Exception as e:
-            print(f"\n✗ Unable to connect to PicoKey device / 无法连接到 PicoKey 设备: {e}")
-            print(f"\nError type / 错误类型: {type(e).__name__}")
-            if platform.system() == "Linux":
-                print("\nTroubleshooting steps / 故障排查步骤：")
-                print("1. Confirm device is plugged in / 确认设备已插入: lsusb | grep -i 'fido\|yubi\|nitro'")
-                print("2. Check device permissions / 检查设备权限: ls -l /dev/bus/usb/*/*")
-                print("3. Check kernel messages / 检查内核消息: sudo dmesg | tail -20")
-                print("4. Try running with sudo / 尝试使用sudo运行")
-            return
-        try:
-            phy = build_phy_bytes(cfg)
-            if not phy:
-                print("No PHY bytes generated, skipping write. / 未生成任何 PHY 字节，跳过写入。")
-                return
-            print(f"Preparing to write {len(phy)} bytes to device... / 准备写入 {len(phy)} 字节到设备...")
-            try:
-                # PicoKey.phy expects Optional[list[int]] for data
-                pk.phy(list(phy))
-                print("Successfully wrote PHY configuration to device. / 已成功写入 PHY 配置到设备。")
-            except Exception as e:
-                print("Error writing to device / 写入设备时发生错误：", e)
-        finally:
-            try:
-                pk.close()
-            except Exception:
-                pass
 
-    apply_local(cfg)
+def show_current_config(pk: PicoKey) -> Optional[PhyData]:
+    """Read and display current device configuration."""
+    print("\n--- Current Device Configuration / 当前设备配置 ---")
+    phy = pk.get_phy()
+    if phy is None:
+        print("Unable to read configuration. / 无法读取配置。")
+        return None
+    
+    if phy.vid is not None and phy.pid is not None:
+        print(f"  VID:PID: {phy.vid:04X}:{phy.pid:04X}")
+    if phy.led_gpio is not None:
+        print(f"  LED GPIO: {phy.led_gpio}")
+    if phy.led_brightness is not None:
+        print(f"  LED Brightness: {phy.led_brightness}")
+    if phy.led_driver is not None:
+        driver_name = "Unknown"
+        for name, val in LED_DRIVER_MAP.items():
+            if val == phy.led_driver:
+                driver_name = name
+                break
+        print(f"  LED Driver: {driver_name}")
+    print(f"  LED Dimmable: {phy.is_led_dimmable}")
+    print(f"  Power Reset Disabled: {phy.is_power_reset_disabled}")
+    print(f"  LED Steady: {phy.is_led_steady}")
+    if phy.up_btn is not None:
+        print(f"  Presence Timeout: {phy.up_btn}s")
+    if phy.usb_product:
+        print(f"  USB Product: {phy.usb_product}")
+    if phy.enabled_curves:
+        print(f"  Enabled Curves: {phy.enabled_curves:#x}")
+        if phy.enabled_curves & PhyCurve.SECP256K1:
+            print("    - secp256k1 enabled")
+    
+    return phy
 
+
+def apply_config(pk: PicoKey, phy: PhyData, ask_confirm: bool = True) -> bool:
+    """Apply configuration to device."""
+    print("\n--- Configuration to Apply / 将要应用的配置 ---")
+    cfg = phy_to_dict(phy)
+    print(json.dumps(cfg, ensure_ascii=False, indent=2))
+    
+    if ask_confirm:
+        confirm = input("\nApply this configuration? / 应用此配置？(y/N) ")
+        if confirm.lower() != "y":
+            print("Cancelled. / 已取消。")
+            return False
+    
+    try:
+        print("Writing configuration... / 正在写入配置...")
+        pk.set_phy(phy)
+        print("✓ Configuration applied successfully. / 配置应用成功。")
+        
+        reboot = input("\nReboot device for changes to take effect? / 重启设备使配置生效？(y/N) ")
+        if reboot.lower() == "y":
+            pk.reboot()
+            print("Device is rebooting... / 设备正在重启...")
+        else:
+            print("Please manually reboot the device. / 请手动重启设备。")
+        
+        return True
+    except Exception as e:
+        print(f"✗ Failed to apply configuration: {e}")
+        return False
+
+
+# ==================== Main ====================
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="PicoKey commissioning configurator")
-    parser.add_argument("--out", "-o", help="Output JSON file path / 输出 JSON 文件路径", default=CFG_OUT)
-    parser.add_argument("--apply", action="store_true", help="Try to apply configuration to device after interactive confirmation / 交互式确认后尝试应用配置到设备")
-    parser.add_argument("--yes", "-y", action="store_true", help="Auto-confirm all prompts (empty input keeps current value) / 自动确认所有提示（留空将被视为保留当前值）")
+    parser = argparse.ArgumentParser(
+        description="PicoKey Configuration Tool / PicoKey 配置工具",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples / 示例:
+  python configure.py              # Interactive configuration
+  python configure.py --show       # Show current device config
+  python configure.py --save       # Save config to JSON
+  python configure.py --load cfg.json --apply  # Load and apply
+"""
+    )
+    parser.add_argument("--show", action="store_true", 
+                        help="Show current device configuration / 显示当前设备配置")
+    parser.add_argument("--save", "-s", metavar="FILE", nargs="?", const=CFG_OUT,
+                        help="Save configuration to JSON file / 保存配置到JSON文件")
+    parser.add_argument("--load", "-l", metavar="FILE",
+                        help="Load configuration from JSON file / 从JSON文件加载配置")
+    parser.add_argument("--apply", "-a", action="store_true",
+                        help="Apply configuration to device / 应用配置到设备")
+    parser.add_argument("--yes", "-y", action="store_true",
+                        help="Skip confirmation prompts / 跳过确认提示")
+    
     args = parser.parse_args()
 
-    cfg = interactive_build()
-
-    outpath = Path(args.out)
-    if outpath.exists():
-        if not args.yes:
-            overwrite = input(f"{outpath} already exists, overwrite? / 已存在，是否覆盖？(y/N) ")
-            if overwrite.lower() != "y":
-                print("Cancelled, file not saved. / 取消，未保存文件。")
-                return
-    save_config(cfg, outpath)
-
-    if args.apply:
-        apply_stub(cfg)
+    # Connect to device
+    pk = connect_device()
+    if pk is None:
+        sys.exit(1)
+    
+    try:
+        # Show current config
+        if args.show:
+            show_current_config(pk)
+            return
+        
+        # Load config from file
+        if args.load:
+            load_path = Path(args.load)
+            if not load_path.exists():
+                print(f"✗ File not found: {load_path}")
+                sys.exit(1)
+            cfg = json.loads(load_path.read_text())
+            phy = dict_to_phy(cfg)
+            print(f"✓ Loaded configuration from {load_path}")
+        else:
+            # Interactive configuration
+            current_phy = pk.get_phy()
+            phy = interactive_build(current_phy)
+        
+        # Save to file
+        if args.save:
+            save_path = Path(args.save)
+            cfg = phy_to_dict(phy)
+            save_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+            print(f"✓ Configuration saved to {save_path}")
+        
+        # Apply to device (default behavior in interactive mode)
+        if args.apply or (not args.load and not args.save):
+            apply_config(pk, phy, ask_confirm=not args.yes)
+    
+    finally:
+        try:
+            pk.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
